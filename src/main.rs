@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use ferrum_flow::alpaca::AlpacaClient;
 use ferrum_flow::analytics::{calculate_gofi, calculate_ofi, price_change, vwap};
 use ferrum_flow::data::{load_book_snapshots, load_trades};
 use ferrum_flow::signal::{SignalConfig, evaluate_signal};
@@ -14,10 +15,22 @@ use ferrum_flow::signal::{SignalConfig, evaluate_signal};
 )]
 struct Cli {
     #[arg(long)]
-    trades: PathBuf,
+    symbol: Option<String>,
 
     #[arg(long)]
-    books: Option<PathBuf>,
+    start: Option<String>,
+
+    #[arg(long)]
+    end: Option<String>,
+
+    #[arg(long, default_value = "iex")]
+    feed: String,
+
+    #[arg(long)]
+    csv_trades: Option<PathBuf>,
+
+    #[arg(long)]
+    csv_books: Option<PathBuf>,
 
     #[arg(long, default_value_t = 1)]
     depth: usize,
@@ -37,13 +50,38 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let trades = load_trades(&cli.trades)?;
+    let (trades, snapshots) = match (
+        cli.symbol.as_deref(),
+        cli.start.as_deref(),
+        cli.end.as_deref(),
+        cli.csv_trades.as_ref(),
+    ) {
+        (Some(symbol), Some(start), Some(end), None) => AlpacaClient::from_env()?
+            .fetch_market_data(symbol, start, end, &cli.feed)
+            .with_context(|| format!("failed to fetch Alpaca market data for {symbol}"))?,
+        (None, None, None, Some(trades_path)) => {
+            let trades = load_trades(trades_path)?;
+            let snapshots = if let Some(path) = &cli.csv_books {
+                load_book_snapshots(path)?
+            } else {
+                Vec::new()
+            };
+            (trades, snapshots)
+        }
+        _ => {
+            anyhow::bail!(
+                "provide either --symbol/--start/--end for Alpaca mode or --csv-trades for CSV mode"
+            )
+        }
+    };
+
     let metrics = calculate_ofi(&trades);
     let derived_vwap = vwap(&trades);
     let last_trade_price = trades.last().map(|trade| trade.price);
 
-    let (gofi, observed_price_change) = if let Some(path) = &cli.books {
-        let snapshots = load_book_snapshots(path)?;
+    let (gofi, observed_price_change) = if snapshots.is_empty() {
+        (None, None)
+    } else {
         let previous = snapshots
             .first()
             .context("book CSV must contain at least one snapshot")?;
@@ -54,8 +92,6 @@ fn main() -> Result<()> {
             Some(calculate_gofi(previous, current, cli.depth)),
             price_change(previous, current),
         )
-    } else {
-        (None, None)
     };
 
     let config = SignalConfig {

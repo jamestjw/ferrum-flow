@@ -2,6 +2,8 @@
 
 Rust CLI for basic microstructure analytics around order flow imbalance.
 
+It uses Alpaca as the primary data source and can also read local CSV files when you want to replay or inspect saved datasets.
+
 It currently supports:
 
 - OFI from buyer- and seller-initiated trades
@@ -71,6 +73,7 @@ Each proposal also includes an execution posture.
 - The absorption rule is heuristic, not a calibrated statistical model.
 - GOFI here is based on level-to-level size deltas only; it does not yet model queue position, hidden liquidity, or full quote-state transitions.
 - The action labels are research outputs, not production execution instructions.
+- When using Alpaca, the project currently uses trades plus level-1 quotes. That means GOFI is only a top-of-book approximation, not true multi-level order book analytics.
 
 ## Trade CSV
 
@@ -94,17 +97,42 @@ timestamp,level,bid_price,bid_size,ask_price,ask_size
 2026-04-27T09:30:00.200Z,2,100.09,1450,100.12,1000
 ```
 
-## Run
+## Run With Alpaca
 
 ```bash
 cargo run -- \
-  --trades trades.csv \
-  --books book.csv \
-  --depth 2 \
+  --symbol AAPL \
+  --start 2026-04-27T13:30:00Z \
+  --end 2026-04-27T13:35:00Z \
+  --feed iex \
+  --depth 1 \
   --momentum-threshold 0.20 \
   --absorption-ratio-threshold 3.0 \
   --absorption-price-epsilon 0.01 \
   --lambda 0.0001
+```
+
+Set your credentials first:
+
+```bash
+export APCA_API_KEY_ID="your-key"
+export APCA_API_SECRET_KEY="your-secret"
+```
+
+The tool will fetch trades and quotes directly from Alpaca.
+
+Notes for Alpaca mode:
+
+- Trade direction is inferred from the latest quote context and then a simple tick-rule fallback when quote classification is ambiguous.
+- `depth` should currently be left at `1`, because the implementation only has top-of-book quote data from Alpaca.
+
+## Run With CSV
+
+```bash
+cargo run -- \
+  --csv-trades trades.csv \
+  --csv-books book.csv \
+  --depth 2
 ```
 
 ## Notes
