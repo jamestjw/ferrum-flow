@@ -69,7 +69,7 @@ Each proposal also includes an execution posture.
 
 ### Important Limits
 
-- The current logic works on the full loaded dataset as one analysis window; it does not yet compute rolling sub-minute windows.
+- In one-shot mode, the current logic works on the full loaded dataset as one analysis window.
 - The absorption rule is heuristic, not a calibrated statistical model.
 - GOFI here is based on level-to-level size deltas only; it does not yet model queue position, hidden liquidity, or full quote-state transitions.
 - The action labels are research outputs, not production execution instructions.
@@ -125,6 +125,39 @@ Notes for Alpaca mode:
 
 - Trade direction is inferred from the latest quote context and then a simple tick-rule fallback when quote classification is ambiguous.
 - `depth` should currently be left at `1`, because the implementation only has top-of-book quote data from Alpaca.
+- Free Alpaca plans usually provide delayed market data. In practice, that means watch mode should analyze a window that ends about `15` minutes in the past, not at the current wall clock time.
+- The default watch window is `300` seconds. That is intentional: with delayed data, the tool is better suited to short-horizon monitoring and research than true real-time execution, and a `5` minute window is usually more stable and less noisy than a `30-60` second micro window.
+- Watch mode defaults to `--market-hours-only true`, so it skips polling when the delayed analysis window falls outside regular US equity hours in New York time.
+
+## Run In Watch Mode
+
+This mode continuously polls Alpaca and re-runs the analysis on a trailing window.
+
+```bash
+cargo run -- \
+  --watch \
+  --symbol AAPL \
+  --feed iex \
+  --window-seconds 300 \
+  --poll-interval-seconds 5 \
+  --data-delay-seconds 900 \
+  --depth 1
+```
+
+How watch mode works:
+
+- Every `poll-interval-seconds`, the tool asks Alpaca for a trailing `window-seconds` slice that ends `data-delay-seconds` in the past.
+- It recomputes OFI, NOFI, VWAP, and the current signal decision on that trailing slice.
+- It keeps running even if a particular poll returns no usable data.
+- By default, it skips fetches when that delayed window falls outside regular market hours. Pass `--market-hours-only false` if you want overnight or extended-hours polling.
+
+Useful options:
+
+- `--window-seconds 60` for a more reactive signal
+- `--window-seconds 300` for the default delayed-data profile
+- `--data-delay-seconds 900` for free-plan Alpaca data
+- `--market-hours-only false` to keep polling outside the regular session
+- `--max-iterations 10` to stop automatically after a fixed number of polling cycles
 
 ## Run With CSV
 
