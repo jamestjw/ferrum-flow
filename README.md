@@ -173,3 +173,10 @@ cargo run -- \
 - This is a research scaffold, not a production trading system.
 - The current absorption heuristic is intentionally simple and should be recalibrated with real market data.
 - GOFI here uses size deltas across levels; if you want queue-position logic or quote-shift-aware decomposition, that can be added next.
+
+## Database
+
+If you use the Postgres persistence layer in `src/db.rs`, the app now runs `sqlx` migrations automatically on connect.
+
+- Migration files live in `migrations/`
+- The current schema creates the `signals` table and the `signals_symbol_timestamp_idx` index

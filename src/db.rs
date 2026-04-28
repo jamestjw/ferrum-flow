@@ -33,11 +33,18 @@ impl DbConfig {
 }
 
 pub async fn connect(url: &str) -> Result<Pool<Postgres>> {
-    PgPoolOptions::new()
+    let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(url)
         .await
-        .context("failed to connect to postgres")
+        .context("failed to connect to postgres")?;
+
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .context("failed to run database migrations")?;
+
+    Ok(pool)
 }
 
 pub struct SignalRecord {
