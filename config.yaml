@@ -1,0 +1,15 @@
+# Ferrum Flow Configuration
+market:
+  symbol: "AAPL"
+  feed: "iex"
+  window_seconds: 300
+  poll_interval_seconds: 60
+  data_delay_seconds: 900
+  market_hours_only: true
+  depth: 1
+
+signal:
+  momentum_threshold: 0.20
+  absorption_ratio_threshold: 3.0
+  absorption_price_epsilon: 0.01
+  lambda: 0.0001

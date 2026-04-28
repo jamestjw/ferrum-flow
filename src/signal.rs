@@ -1,20 +1,22 @@
+use serde::{Deserialize, Serialize};
+
 use crate::analytics::{OfiMetrics, estimate_price_impact};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Bias {
     Long,
     Short,
     Neutral,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionMode {
     Aggressive,
     Passive,
     Neutral,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
     EnterLong,
     EnterShort,
@@ -25,7 +27,7 @@ pub enum Action {
     NoTrade,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignalConfig {
     pub momentum_threshold: f64,
     pub absorption_ratio_threshold: f64,
