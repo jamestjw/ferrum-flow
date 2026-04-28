@@ -104,20 +104,40 @@ impl TickerConfig {
 
         // Apply ticker market overrides
         if let Some(ref over) = self.market {
-            if let Some(ref f) = over.feed { market.feed = f.clone(); }
-            if let Some(w) = over.window_seconds { market.window_seconds = w; }
-            if let Some(p) = over.poll_interval_seconds { market.poll_interval_seconds = p; }
-            if let Some(d) = over.data_delay_seconds { market.data_delay_seconds = d; }
-            if let Some(m) = over.market_hours_only { market.market_hours_only = m; }
-            if let Some(dp) = over.depth { market.depth = dp; }
+            if let Some(ref f) = over.feed {
+                market.feed = f.clone();
+            }
+            if let Some(w) = over.window_seconds {
+                market.window_seconds = w;
+            }
+            if let Some(p) = over.poll_interval_seconds {
+                market.poll_interval_seconds = p;
+            }
+            if let Some(d) = over.data_delay_seconds {
+                market.data_delay_seconds = d;
+            }
+            if let Some(m) = over.market_hours_only {
+                market.market_hours_only = m;
+            }
+            if let Some(dp) = over.depth {
+                market.depth = dp;
+            }
         }
 
         // Apply ticker signal overrides
         if let Some(ref over) = self.signal {
-            if let Some(mt) = over.momentum_threshold { signal.momentum_threshold = mt; }
-            if let Some(ar) = over.absorption_ratio_threshold { signal.absorption_ratio_threshold = ar; }
-            if let Some(ae) = over.absorption_price_epsilon { signal.absorption_price_epsilon = ae; }
-            if let Some(l) = over.lambda { signal.lambda = l; }
+            if let Some(mt) = over.momentum_threshold {
+                signal.momentum_threshold = mt;
+            }
+            if let Some(ar) = over.absorption_ratio_threshold {
+                signal.absorption_ratio_threshold = ar;
+            }
+            if let Some(ae) = over.absorption_price_epsilon {
+                signal.absorption_price_epsilon = ae;
+            }
+            if let Some(l) = over.lambda {
+                signal.lambda = l;
+            }
         }
 
         (market, signal)
@@ -301,7 +321,6 @@ async fn run_multi_ticker_watch(cli: &Cli, app_config: &AppConfig) -> Result<()>
             run_watch_mode(symbol, market, signal, pool, max_iterations).await
         }));
     }
-
 
     use futures::future::join_all;
     let results = join_all(handles).await;
