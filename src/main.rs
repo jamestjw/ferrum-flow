@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -12,6 +13,7 @@ use ferrum_flow::data::{BookSnapshot, TradeEvent, load_book_snapshots, load_trad
 use ferrum_flow::db::{self, DbConfig, SignalRecord};
 use ferrum_flow::signal::{SignalConfig, SignalDecision, evaluate_signal};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::{Pool, Postgres};
 
 #[derive(Debug, Parser)]
@@ -275,6 +277,41 @@ impl AppConfig {
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
+
+    // Initialize structured JSON logger
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format(|buf, record| {
+            let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            let level = record.level().to_string();
+            let message = record.args().to_string();
+
+            let log_entry = if message.starts_with('{') {
+                // If message is already JSON-like, try to parse and merge
+                if let Ok(mut map) =
+                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&message)
+                {
+                    map.insert("timestamp".to_string(), json!(timestamp));
+                    map.insert("level".to_string(), json!(level));
+                    json!(map)
+                } else {
+                    json!({
+                        "timestamp": timestamp,
+                        "level": level,
+                        "message": message,
+                    })
+                }
+            } else {
+                json!({
+                    "timestamp": timestamp,
+                    "level": level,
+                    "message": message,
+                })
+            };
+
+            writeln!(buf, "{}", log_entry)
+        })
+        .init();
+
     let cli = Cli::parse();
     let app_config = AppConfig::load(&cli)?;
 
@@ -310,6 +347,8 @@ async fn run_multi_ticker_watch(cli: &Cli, app_config: &AppConfig) -> Result<()>
         anyhow::bail!("no symbol provided via CLI or config file");
     };
 
+    log::info!("Starting watch mode for {} tickers", tickers.len());
+
     let mut handles = Vec::new();
     for ticker in tickers {
         let (market, signal) = ticker.resolve(&app_config.shared);
@@ -342,8 +381,18 @@ async fn run_batch_mode(cli: &Cli, app_config: &AppConfig) -> Result<()> {
         .or(app_config.shared.market.symbol.as_deref())
         .context("symbol must be provided for batch analysis")?;
 
+    log::info!("Running batch mode for symbol: {}", symbol);
+
     let (trades, snapshots) = load_input_data(cli, &market, symbol).await?;
-    let _ = analyze_and_render(&trades, &snapshots, market.depth, &signal, None, None, None);
+    let _ = analyze_and_render(
+        &trades,
+        &snapshots,
+        market.depth,
+        &signal,
+        None,
+        None,
+        Some(symbol),
+    );
 
     Ok(())
 }
@@ -378,12 +427,15 @@ async fn run_watch_mode(
         let start_text = start.to_rfc3339_opts(SecondsFormat::Secs, true);
         let end_text = end.to_rfc3339_opts(SecondsFormat::Secs, true);
 
-        print_watch_banner(&symbol, iteration + 1, &start_text, &end_text);
-
         if market.market_hours_only && !is_regular_market_window(end) {
-            println!(
-                "[{}] Market Status: outside regular US equity hours, skipping fetch",
-                symbol
+            log::info!(
+                "{}",
+                json!({
+                    "symbol": symbol,
+                    "status": "market_closed",
+                    "timestamp": end.to_rfc3339(),
+                    "msg": "Outside regular US equity hours, skipping fetch"
+                })
             );
             iteration += 1;
             tokio::time::sleep(Duration::from_secs(market.poll_interval_seconds)).await;
@@ -396,12 +448,6 @@ async fn run_watch_mode(
         {
             Ok((trades, snapshots)) => {
                 let last_signal = db::get_last_signal(&pool, &symbol).await.ok().flatten();
-                if let Some(ref last) = last_signal {
-                    println!(
-                        "[{}] Last Recommendation: {:?} (Action: {:?})",
-                        symbol, last.bias, last.action
-                    );
-                }
 
                 let (metrics, decision) = analyze_and_render(
                     &trades,
@@ -436,11 +482,25 @@ async fn run_watch_mode(
                 };
 
                 if let Err(e) = db::save_signal(&pool, &record).await {
-                    println!("[{}] DB Save Error: {e:#}", symbol);
+                    log::error!(
+                        "{}",
+                        json!({
+                            "symbol": symbol,
+                            "error": format!("{e:#}"),
+                            "msg": "Failed to save signal to database"
+                        })
+                    );
                 }
             }
             Err(error) => {
-                println!("[{}] Fetch Error: {error:#}", symbol);
+                log::error!(
+                    "{}",
+                    json!({
+                        "symbol": symbol,
+                        "error": format!("{error:#}"),
+                        "msg": "Failed to fetch market data"
+                    })
+                );
             }
         }
 
@@ -491,8 +551,8 @@ fn analyze_and_render(
     depth: usize,
     config: &SignalConfig,
     iteration: Option<usize>,
-    _last_signal: Option<SignalDecision>,
-    _symbol: Option<&str>,
+    last_signal: Option<SignalDecision>,
+    symbol: Option<&str>,
 ) -> (OfiMetrics, SignalDecision) {
     let metrics = calculate_ofi(trades);
     let derived_vwap = vwap(trades);
@@ -516,44 +576,29 @@ fn analyze_and_render(
         config,
     );
 
-    if let Some(iteration) = iteration {
-        println!("Iteration: {iteration}");
-    }
-
-    println!("OFI: {:.6}", metrics.ofi);
-    println!("NOFI: {:.6}", metrics.normalized_ofi);
-    println!("Total Volume: {:.6}", metrics.total_volume);
-    println!("Trades: {}", trades.len());
-
-    if let Some(gofi) = gofi {
-        println!("GOFI(depth={}): {:.6}", depth, gofi);
-    }
-
-    if let Some(vwap) = derived_vwap {
-        println!("VWAP: {:.6}", vwap);
-    }
-
-    if let Some(delta) = observed_price_change {
-        println!("Observed Mid-Price Change: {:.6}", delta);
-    }
-
-    println!(
-        "Expected Price Change: {:.6}",
-        decision.expected_price_change
+    log::info!(
+        "{}",
+        json!({
+            "symbol": symbol,
+            "iteration": iteration,
+            "ofi": metrics.ofi,
+            "nofi": metrics.normalized_ofi,
+            "volume": metrics.total_volume,
+            "trades": trades.len(),
+            "gofi": gofi,
+            "vwap": derived_vwap,
+            "price_change": observed_price_change,
+            "expected_change": decision.expected_price_change,
+            "bias": format!("{:?}", decision.bias),
+            "action": format!("{:?}", decision.action),
+            "execution": format!("{:?}", decision.execution),
+            "absorption": decision.absorption_detected,
+            "last_bias": last_signal.as_ref().map(|s| format!("{:?}", s.bias)),
+            "last_action": last_signal.as_ref().map(|s| format!("{:?}", s.action)),
+        })
     );
-    println!("Bias: {:?}", decision.bias);
-    println!("Execution: {:?}", decision.execution);
-    println!("Action: {:?}", decision.action);
-    println!("Absorption Detected: {}", decision.absorption_detected);
 
     (metrics, decision)
-}
-
-fn print_watch_banner(symbol: &str, iteration: usize, start: &str, end: &str) {
-    println!("---");
-    println!("Symbol: {symbol}");
-    println!("Window: {start} -> {end}");
-    println!("Poll Iteration: {iteration}");
 }
 
 fn is_regular_market_window(timestamp: DateTime<Utc>) -> bool {
