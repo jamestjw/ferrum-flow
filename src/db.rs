@@ -85,7 +85,10 @@ pub async fn save_signal(pool: &Pool<Postgres>, record: &SignalRecord) -> Result
     Ok(())
 }
 
-pub async fn get_last_signal(pool: &Pool<Postgres>, symbol: &str) -> Result<Option<SignalDecision>> {
+pub async fn get_last_signal(
+    pool: &Pool<Postgres>,
+    symbol: &str,
+) -> Result<Option<SignalDecision>> {
     let row = sqlx::query(
         r#"
         SELECT bias, action, execution, expected_price_change, absorption_detected
