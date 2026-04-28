@@ -7,7 +7,7 @@ use chrono::{DateTime, Datelike, SecondsFormat, TimeDelta, Timelike, Utc, Weekda
 use chrono_tz::America::New_York;
 use clap::Parser;
 use ferrum_flow::alpaca::AlpacaClient;
-use ferrum_flow::analytics::{calculate_gofi, calculate_ofi, price_change, vwap, OfiMetrics};
+use ferrum_flow::analytics::{OfiMetrics, calculate_gofi, calculate_ofi, price_change, vwap};
 use ferrum_flow::data::{BookSnapshot, TradeEvent, load_book_snapshots, load_trades};
 use ferrum_flow::db::{self, DbConfig, SignalRecord};
 use ferrum_flow::signal::{SignalConfig, SignalDecision, evaluate_signal};
@@ -132,12 +132,24 @@ struct MarketConfig {
     pub depth: usize,
 }
 
-fn default_feed() -> String { "iex".to_string() }
-fn default_window() -> i64 { 300 }
-fn default_poll() -> u64 { 60 }
-fn default_delay() -> i64 { 900 }
-fn default_market_hours() -> bool { true }
-fn default_depth() -> usize { 1 }
+fn default_feed() -> String {
+    "iex".to_string()
+}
+fn default_window() -> i64 {
+    300
+}
+fn default_poll() -> u64 {
+    60
+}
+fn default_delay() -> i64 {
+    900
+}
+fn default_market_hours() -> bool {
+    true
+}
+fn default_depth() -> usize {
+    1
+}
 
 impl Default for MarketConfig {
     fn default() -> Self {
@@ -162,100 +174,134 @@ impl Default for AppConfig {
     }
 }
 
+impl AppConfig {
+    pub fn load(cli: &Cli) -> Result<Self> {
+        let mut config = if let Some(path) = &cli.config {
+            let content = fs::read_to_string(path)
+                .with_context(|| format!("failed to read config file: {}", path.display()))?;
+            serde_yaml::from_str(&content).context("failed to parse yaml config")?
+        } else if fs::metadata("config.yaml").is_ok() {
+            let content = fs::read_to_string("config.yaml").context("failed to read config.yaml")?;
+            serde_yaml::from_str(&content).context("failed to parse config.yaml")?
+        } else {
+            AppConfig::default()
+        };
+
+        // Global CLI overrides for shared config
+        if let Some(ref f) = cli.feed {
+            config.shared.market.feed = f.clone();
+        }
+        if let Some(w) = cli.window_seconds {
+            config.shared.market.window_seconds = w;
+        }
+        if let Some(p) = cli.poll_interval_seconds {
+            config.shared.market.poll_interval_seconds = p;
+        }
+        if let Some(d) = cli.data_delay_seconds {
+            config.shared.market.data_delay_seconds = d;
+        }
+        if let Some(m) = cli.market_hours_only {
+            config.shared.market.market_hours_only = m;
+        }
+        if let Some(dp) = cli.depth {
+            config.shared.market.depth = dp;
+        }
+
+        if let Some(mt) = cli.momentum_threshold {
+            config.shared.signal.momentum_threshold = mt;
+        }
+        if let Some(ar) = cli.absorption_ratio_threshold {
+            config.shared.signal.absorption_ratio_threshold = ar;
+        }
+        if let Some(ae) = cli.absorption_price_epsilon {
+            config.shared.signal.absorption_price_epsilon = ae;
+        }
+        if let Some(l) = cli.lambda {
+            config.shared.signal.lambda = l;
+        }
+
+        Ok(config)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
-
-    let mut app_config = if let Some(path) = &cli.config {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read config file: {}", path.display()))?;
-        serde_yaml::from_str(&content).context("failed to parse yaml config")?
-    } else if fs::metadata("config.yaml").is_ok() {
-        let content = fs::read_to_string("config.yaml").context("failed to read config.yaml")?;
-        serde_yaml::from_str(&content).context("failed to parse config.yaml")?
-    } else {
-        AppConfig::default()
-    };
-
-    // Global CLI overrides for shared config
-    if let Some(ref f) = cli.feed { app_config.shared.market.feed = f.clone(); }
-    if let Some(w) = cli.window_seconds { app_config.shared.market.window_seconds = w; }
-    if let Some(p) = cli.poll_interval_seconds { app_config.shared.market.poll_interval_seconds = p; }
-    if let Some(d) = cli.data_delay_seconds { app_config.shared.market.data_delay_seconds = d; }
-    if let Some(m) = cli.market_hours_only { app_config.shared.market.market_hours_only = m; }
-    if let Some(dp) = cli.depth { app_config.shared.market.depth = dp; }
-
-    if let Some(mt) = cli.momentum_threshold { app_config.shared.signal.momentum_threshold = mt; }
-    if let Some(ar) = cli.absorption_ratio_threshold { app_config.shared.signal.absorption_ratio_threshold = ar; }
-    if let Some(ae) = cli.absorption_price_epsilon { app_config.shared.signal.absorption_price_epsilon = ae; }
-    if let Some(l) = cli.lambda { app_config.shared.signal.lambda = l; }
+    let app_config = AppConfig::load(&cli)?;
 
     let is_watch = !cli.batch && cli.csv_trades.is_none();
 
     if is_watch {
-        let db_cfg = DbConfig::from_env()?;
-        let pool = db::connect(&db_cfg.url()).await?;
-
-        // Determine list of tickers to watch
-        let tickers = if let Some(ref cli_symbol) = cli.symbol {
-            vec![TickerConfig {
-                symbol: cli_symbol.clone(),
-                market: None,
-                signal: None,
-            }]
-        } else if !app_config.tickers.is_empty() {
-            app_config.tickers.clone()
-        } else if let Some(ref shared_symbol) = app_config.shared.market.symbol {
-            vec![TickerConfig {
-                symbol: shared_symbol.clone(),
-                market: None,
-                signal: None,
-            }]
-        } else {
-            anyhow::bail!("no symbol provided via CLI or config file");
-        };
-
-        let mut handles = Vec::new();
-        for ticker in tickers {
-            let mut market = app_config.shared.market.clone();
-            let mut signal = app_config.shared.signal.clone();
-
-            // Apply ticker overrides
-            if let Some(over) = ticker.market {
-                if let Some(f) = over.feed { market.feed = f; }
-                if let Some(w) = over.window_seconds { market.window_seconds = w; }
-                if let Some(p) = over.poll_interval_seconds { market.poll_interval_seconds = p; }
-                if let Some(d) = over.data_delay_seconds { market.data_delay_seconds = d; }
-                if let Some(m) = over.market_hours_only { market.market_hours_only = m; }
-                if let Some(dp) = over.depth { market.depth = dp; }
-            }
-            if let Some(over) = ticker.signal {
-                if let Some(mt) = over.momentum_threshold { signal.momentum_threshold = mt; }
-                if let Some(ar) = over.absorption_ratio_threshold { signal.absorption_ratio_threshold = ar; }
-                if let Some(ae) = over.absorption_price_epsilon { signal.absorption_price_epsilon = ae; }
-                if let Some(l) = over.lambda { signal.lambda = l; }
-            }
-
-            let pool = pool.clone();
-            let symbol = ticker.symbol.clone();
-            let max_iterations = cli.max_iterations;
-            
-            handles.push(tokio::spawn(async move {
-                run_watch_mode(symbol, market, signal, pool, max_iterations).await
-            }));
-        }
-
-        use futures::future::join_all;
-        let results = join_all(handles).await;
-        for res in results {
-            res??;
-        }
-
-        return Ok(());
+        return run_multi_ticker_watch(&cli, &app_config).await;
     }
 
-    // Batch mode (historical/CSV)
+    run_batch_mode(&cli, &app_config).await
+}
+
+async fn run_multi_ticker_watch(cli: &Cli, app_config: &AppConfig) -> Result<()> {
+    let db_cfg = DbConfig::from_env()?;
+    let pool = db::connect(&db_cfg.url()).await?;
+
+    // Determine list of tickers to watch
+    let tickers = if let Some(ref cli_symbol) = cli.symbol {
+        vec![TickerConfig {
+            symbol: cli_symbol.clone(),
+            market: None,
+            signal: None,
+        }]
+    } else if !app_config.tickers.is_empty() {
+        app_config.tickers.clone()
+    } else if let Some(ref shared_symbol) = app_config.shared.market.symbol {
+        vec![TickerConfig {
+            symbol: shared_symbol.clone(),
+            market: None,
+            signal: None,
+        }]
+    } else {
+        anyhow::bail!("no symbol provided via CLI or config file");
+    };
+
+    let mut handles = Vec::new();
+    for ticker in tickers {
+        let mut market = app_config.shared.market.clone();
+        let mut signal = app_config.shared.signal.clone();
+
+        // Apply ticker overrides
+        if let Some(over) = ticker.market {
+            if let Some(f) = over.feed { market.feed = f; }
+            if let Some(w) = over.window_seconds { market.window_seconds = w; }
+            if let Some(p) = over.poll_interval_seconds { market.poll_interval_seconds = p; }
+            if let Some(d) = over.data_delay_seconds { market.data_delay_seconds = d; }
+            if let Some(m) = over.market_hours_only { market.market_hours_only = m; }
+            if let Some(dp) = over.depth { market.depth = dp; }
+        }
+        if let Some(over) = ticker.signal {
+            if let Some(mt) = over.momentum_threshold { signal.momentum_threshold = mt; }
+            if let Some(ar) = over.absorption_ratio_threshold { signal.absorption_ratio_threshold = ar; }
+            if let Some(ae) = over.absorption_price_epsilon { signal.absorption_price_epsilon = ae; }
+            if let Some(l) = over.lambda { signal.lambda = l; }
+        }
+
+        let pool = pool.clone();
+        let symbol = ticker.symbol.clone();
+        let max_iterations = cli.max_iterations;
+        
+        handles.push(tokio::spawn(async move {
+            run_watch_mode(symbol, market, signal, pool, max_iterations).await
+        }));
+    }
+
+    use futures::future::join_all;
+    let results = join_all(handles).await;
+    for res in results {
+        res??;
+    }
+
+    Ok(())
+}
+
+async fn run_batch_mode(cli: &Cli, app_config: &AppConfig) -> Result<()> {
     let market = app_config.shared.market.clone();
     let signal = app_config.shared.signal.clone();
     
@@ -264,7 +310,7 @@ async fn main() -> Result<()> {
         .or(app_config.shared.market.symbol.as_deref())
         .context("symbol must be provided for batch analysis")?;
 
-    let (trades, snapshots) = load_input_data(&cli, &market, symbol).await?;
+    let (trades, snapshots) = load_input_data(cli, &market, symbol).await?;
     let _ = analyze_and_render(&trades, &snapshots, market.depth, &signal, None, None, None);
 
     Ok(())
@@ -275,7 +321,7 @@ async fn run_watch_mode(
     market: MarketConfig,
     signal: SignalConfig,
     pool: Pool<Postgres>,
-    max_iterations: Option<usize>
+    max_iterations: Option<usize>,
 ) -> Result<()> {
     if market.window_seconds <= 0 {
         anyhow::bail!("window_seconds must be greater than zero");
@@ -303,17 +349,26 @@ async fn run_watch_mode(
         print_watch_banner(&symbol, iteration + 1, &start_text, &end_text);
 
         if market.market_hours_only && !is_regular_market_window(end) {
-            println!("[{}] Market Status: outside regular US equity hours, skipping fetch", symbol);
+            println!(
+                "[{}] Market Status: outside regular US equity hours, skipping fetch",
+                symbol
+            );
             iteration += 1;
             tokio::time::sleep(Duration::from_secs(market.poll_interval_seconds)).await;
             continue;
         }
 
-        match client.fetch_market_data(&symbol, &start_text, &end_text, &market.feed).await {
+        match client
+            .fetch_market_data(&symbol, &start_text, &end_text, &market.feed)
+            .await
+        {
             Ok((trades, snapshots)) => {
                 let last_signal = db::get_last_signal(&pool, &symbol).await.ok().flatten();
                 if let Some(ref last) = last_signal {
-                    println!("[{}] Last Recommendation: {:?} (Action: {:?})", symbol, last.bias, last.action);
+                    println!(
+                        "[{}] Last Recommendation: {:?} (Action: {:?})",
+                        symbol, last.bias, last.action
+                    );
                 }
 
                 let (metrics, decision) = analyze_and_render(
