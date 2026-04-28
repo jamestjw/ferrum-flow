@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use reqwest::blocking::Client;
+use reqwest::Client;
 use serde::{Deserialize, Deserializer};
 
 use crate::data::{BookLevel, BookSnapshot, TradeDirection, TradeEvent};
@@ -28,15 +28,15 @@ impl AlpacaClient {
         })
     }
 
-    pub fn fetch_market_data(
+    pub async fn fetch_market_data(
         &self,
         symbol: &str,
         start: &str,
         end: &str,
         feed: &str,
     ) -> Result<(Vec<TradeEvent>, Vec<BookSnapshot>)> {
-        let raw_quotes = self.fetch_quotes(symbol, start, end, feed)?;
-        let raw_trades = self.fetch_trades(symbol, start, end, feed)?;
+        let raw_quotes = self.fetch_quotes(symbol, start, end, feed).await?;
+        let raw_trades = self.fetch_trades(symbol, start, end, feed).await?;
 
         if raw_trades.is_empty() {
             bail!("alpaca returned no trades for {symbol} in the requested window");
@@ -60,7 +60,7 @@ impl AlpacaClient {
         Ok((trade_events, book_snapshots))
     }
 
-    fn fetch_trades(
+    async fn fetch_trades(
         &self,
         symbol: &str,
         start: &str,
@@ -89,12 +89,14 @@ impl AlpacaClient {
 
             let response = request
                 .send()
+                .await
                 .with_context(|| format!("failed to request Alpaca trades for {symbol}"))?
                 .error_for_status()
                 .with_context(|| format!("Alpaca trades request failed for {symbol}"))?;
 
             let payload: AlpacaTradesResponse = response
                 .json()
+                .await
                 .with_context(|| format!("failed to decode Alpaca trades response for {symbol}"))?;
 
             trades.extend(payload.trades);
@@ -108,7 +110,7 @@ impl AlpacaClient {
         Ok(trades)
     }
 
-    fn fetch_quotes(
+    async fn fetch_quotes(
         &self,
         symbol: &str,
         start: &str,
@@ -137,12 +139,14 @@ impl AlpacaClient {
 
             let response = request
                 .send()
+                .await
                 .with_context(|| format!("failed to request Alpaca quotes for {symbol}"))?
                 .error_for_status()
                 .with_context(|| format!("Alpaca quotes request failed for {symbol}"))?;
 
             let payload: AlpacaQuotesResponse = response
                 .json()
+                .await
                 .with_context(|| format!("failed to decode Alpaca quotes response for {symbol}"))?;
 
             quotes.extend(payload.quotes);
