@@ -97,6 +97,33 @@ struct TickerConfig {
     pub signal: Option<TickerSignalConfig>,
 }
 
+impl TickerConfig {
+    pub fn resolve(&self, shared: &SharedConfig) -> (MarketConfig, SignalConfig) {
+        let mut market = shared.market.clone();
+        let mut signal = shared.signal.clone();
+
+        // Apply ticker market overrides
+        if let Some(ref over) = self.market {
+            if let Some(ref f) = over.feed { market.feed = f.clone(); }
+            if let Some(w) = over.window_seconds { market.window_seconds = w; }
+            if let Some(p) = over.poll_interval_seconds { market.poll_interval_seconds = p; }
+            if let Some(d) = over.data_delay_seconds { market.data_delay_seconds = d; }
+            if let Some(m) = over.market_hours_only { market.market_hours_only = m; }
+            if let Some(dp) = over.depth { market.depth = dp; }
+        }
+
+        // Apply ticker signal overrides
+        if let Some(ref over) = self.signal {
+            if let Some(mt) = over.momentum_threshold { signal.momentum_threshold = mt; }
+            if let Some(ar) = over.absorption_ratio_threshold { signal.absorption_ratio_threshold = ar; }
+            if let Some(ae) = over.absorption_price_epsilon { signal.absorption_price_epsilon = ae; }
+            if let Some(l) = over.lambda { signal.lambda = l; }
+        }
+
+        (market, signal)
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 struct TickerMarketConfig {
     pub feed: Option<String>,
@@ -181,7 +208,8 @@ impl AppConfig {
                 .with_context(|| format!("failed to read config file: {}", path.display()))?;
             serde_yaml::from_str(&content).context("failed to parse yaml config")?
         } else if fs::metadata("config.yaml").is_ok() {
-            let content = fs::read_to_string("config.yaml").context("failed to read config.yaml")?;
+            let content =
+                fs::read_to_string("config.yaml").context("failed to read config.yaml")?;
             serde_yaml::from_str(&content).context("failed to parse config.yaml")?
         } else {
             AppConfig::default()
@@ -264,33 +292,16 @@ async fn run_multi_ticker_watch(cli: &Cli, app_config: &AppConfig) -> Result<()>
 
     let mut handles = Vec::new();
     for ticker in tickers {
-        let mut market = app_config.shared.market.clone();
-        let mut signal = app_config.shared.signal.clone();
-
-        // Apply ticker overrides
-        if let Some(over) = ticker.market {
-            if let Some(f) = over.feed { market.feed = f; }
-            if let Some(w) = over.window_seconds { market.window_seconds = w; }
-            if let Some(p) = over.poll_interval_seconds { market.poll_interval_seconds = p; }
-            if let Some(d) = over.data_delay_seconds { market.data_delay_seconds = d; }
-            if let Some(m) = over.market_hours_only { market.market_hours_only = m; }
-            if let Some(dp) = over.depth { market.depth = dp; }
-        }
-        if let Some(over) = ticker.signal {
-            if let Some(mt) = over.momentum_threshold { signal.momentum_threshold = mt; }
-            if let Some(ar) = over.absorption_ratio_threshold { signal.absorption_ratio_threshold = ar; }
-            if let Some(ae) = over.absorption_price_epsilon { signal.absorption_price_epsilon = ae; }
-            if let Some(l) = over.lambda { signal.lambda = l; }
-        }
-
+        let (market, signal) = ticker.resolve(&app_config.shared);
         let pool = pool.clone();
         let symbol = ticker.symbol.clone();
         let max_iterations = cli.max_iterations;
-        
+
         handles.push(tokio::spawn(async move {
             run_watch_mode(symbol, market, signal, pool, max_iterations).await
         }));
     }
+
 
     use futures::future::join_all;
     let results = join_all(handles).await;
@@ -304,9 +315,11 @@ async fn run_multi_ticker_watch(cli: &Cli, app_config: &AppConfig) -> Result<()>
 async fn run_batch_mode(cli: &Cli, app_config: &AppConfig) -> Result<()> {
     let market = app_config.shared.market.clone();
     let signal = app_config.shared.signal.clone();
-    
+
     // For batch mode, we only handle one symbol at a time from CLI
-    let symbol = cli.symbol.as_deref()
+    let symbol = cli
+        .symbol
+        .as_deref()
         .or(app_config.shared.market.symbol.as_deref())
         .context("symbol must be provided for batch analysis")?;
 
